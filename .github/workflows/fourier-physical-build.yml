@@ -1,0 +1,22 @@
+name: Build VocaPhone physical Fourier test APKs
+on:
+  push:
+    branches: [qa/fourier-physical]
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: ./.github/actions/setup-android
+      - working-directory: android
+        run: ./gradlew :app:assembleFullDebug :app:assembleFullDebugAndroidTest --no-daemon
+      - uses: actions/upload-artifact@v4
+        with:
+          name: physical-test-apks
+          path: android/app/build/outputs/apk/**/*.apk
+          retention-days: 2

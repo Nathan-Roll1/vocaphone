@@ -56,6 +56,31 @@ class LocalEngineEndToEndTest {
         assertEquals(transcript, manager.transcribe(speech(), model.id, "en").text)
     }
 
+    @Test
+    fun fourierDownloadsAndTranscribesOnPhysicalPhone() = runBlocking {
+        val manager = LocalModelManager(context)
+        val model = requireNotNull(LocalModelCatalog.find("oruk-fourier-2b"))
+        val device = android.os.Build.MODEL
+        Log.i("FourierPhysical", "start device=$device abi=${android.os.Build.SUPPORTED_ABIS.joinToString()}")
+        manager.download(model)
+        assertTrue("Model failed download and verification", manager.isDownloaded(model.id))
+        LocalModelIntegrity.verifySizes(model, manager.directoryFor(model))
+        val readyFile = File(context.filesDir, "fourier-download-ready")
+        readyFile.writeText("verified")
+        Log.i("FourierPhysical", "ten files verified; awaiting network test")
+        val networkMarker = File(context.filesDir, "fourier-network-checked")
+        val deadline = System.currentTimeMillis() + 90_000
+        while (!networkMarker.exists() && System.currentTimeMillis() < deadline) {
+            kotlinx.coroutines.delay(1000)
+        }
+        repeat(2) { index ->
+            val started = android.os.SystemClock.elapsedRealtime()
+            val text = manager.transcribe(speech(), model.id, "en").text
+            Log.i("FourierPhysical", "pass=${index + 1} runtimeMs=${android.os.SystemClock.elapsedRealtime() - started} transcript=$text")
+            assertTrue("unexpected Fourier result: $text", text.lowercase().contains("yellow lamps"))
+        }
+    }
+
     /**
      * Repeatable physical-device timing for a model that is already downloaded
      * in the app under test. This deliberately does not assert a duration: the
