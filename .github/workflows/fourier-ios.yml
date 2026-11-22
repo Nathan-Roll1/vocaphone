@@ -1,0 +1,10 @@
+name: Fourier iOS catalog validation
+on:
+  push:
+    branches: [qa/fourier-ios]
+permissions:
+  contents: read
+  pull-requests: write
+jobs:
+  ios:
+    uses: ./.github/workflows/quality-ios.yml
