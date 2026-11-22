@@ -169,7 +169,7 @@ jobs:
             -project VocaPhone.xcodeproj -scheme VocaPhone -sdk iphonesimulator \
             -destination "platform=iOS Simulator,id=${UDID}" -derivedDataPath "${DERIVED_DATA}" \
             -resultBundlePath "${RUNNER_TEMP}/Fourier.xcresult" -disableAutomaticPackageResolution \
-            -only-testing:VocaPhoneTests/SherpaModelEndToEndTests/aStopTapDoesNotSilenceQuietSpeech \
+            -only-testing:VocaPhoneTests/SherpaModelEndToEndTests \
             CODE_SIGNING_ALLOWED=NO COMPILER_INDEX_STORE_ENABLE=NO test-without-building
           summary=$(xcrun xcresulttool get test-results summary --path "${RUNNER_TEMP}/Fourier.xcresult" --compact)
           echo "${summary}"
