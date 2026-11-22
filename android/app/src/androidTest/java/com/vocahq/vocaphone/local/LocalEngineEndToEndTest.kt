@@ -101,22 +101,24 @@ class LocalEngineEndToEndTest {
         val model = requireNotNull(LocalModelCatalog.find("oruk-fourier-2b"))
         val initialFree = context.filesDir.usableSpace
         val prefix = File(m.directoryFor(model).parentFile, ".${model.id}.staging")
-        val first = launch(Dispatchers.IO) {
-            m.download(model, cancelReason = { DownloadCancelReason.TIME_LIMIT })
-        }
+        val first = m.startDownload(model)
         withTimeout(240_000) {
             while (m.state.value.downloadedBytes < 32_000_000) delay(250)
         }
-        first.cancelAndJoin()
+        val atInterrupt = m.state.value.downloadedBytes
+        m.cancelDownload(DownloadCancelReason.TIME_LIMIT)
+        first.join()
         val retained = prefix.walkTopDown().filter { it.isFile }.sumOf { it.length() }
-        assertTrue("Interrupted transfer lost its partial data", retained >= 20_000_000)
+        Log.i("FourierPhysical", "interrupt reportedBytes=$atInterrupt retainedBytes=$retained downloaded=${m.isDownloaded(model.id)} ${m.state.value.message}")
+        val problems = mutableListOf<String>()
+        if (retained < 20_000_000) problems.add("only $retained bytes retained after interruption")
         val resumed = AtomicLong(0)
         val monitor = launch(Dispatchers.Default) {
             m.state.collect { state -> resumed.updateAndGet { maxOf(it, state.resumedBytes) } }
         }
         m.download(model)
         monitor.cancelAndJoin()
-        assertTrue("The resumed request did not reuse a byte range", resumed.get() > 0)
+        if (resumed.get() == 0L) problems.add("zero recovered bytes reported on resumed transfer")
         LocalModelIntegrity.verifySizes(model, m.directoryFor(model))
         val installed = m.directoryFor(model).walkTopDown().filter { it.isFile }.sumOf { it.length() }
         Log.i("FourierPhysical", "resume retainedBytes=$retained resumedBytes=${resumed.get()} installedBytes=$installed freeBeforeBytes=$initialFree freeAfterBytes=${context.filesDir.usableSpace}")
@@ -148,7 +150,6 @@ class LocalEngineEndToEndTest {
                 while (!textInEditor().contains(fragment, ignoreCase = true)) delay(200)
             }
         }
-        val problems = mutableListOf<String>()
         try {
             container.settings.setDisclosureAccepted(true)
             shell("ime enable $imeId")
@@ -156,9 +157,6 @@ class LocalEngineEndToEndTest {
             shell("settings put secure enabled_accessibility_services ${if (oldServices.isBlank() || oldServices == "null") accessId else "$oldServices:$accessId"}")
             shell("settings put secure accessibility_enabled 1")
             openEditor()
-            withTimeout(25_000) {
-                while (container.dictation.imeInserter?.currentTargetPackage() != ext) delay(250)
-            }
             val transcript = m.transcribe(speech(), model.id, "en").text
             assertTrue("Expected real Fourier fixture text", transcript.contains("yellow lamps", ignoreCase = true))
             val memory = File("/proc/self/status").readLines().filter {
@@ -166,6 +164,9 @@ class LocalEngineEndToEndTest {
             }.joinToString(" ")
             Log.i("FourierPhysical", "post-decode process memory $memory")
             runCatching {
+                withTimeout(25_000) {
+                    while (container.dictation.imeInserter?.currentTargetPackage() != ext) delay(250)
+                }
                 val ime = container.dictation.imeInserter as VocaPhoneInputMethodService
                 val result = withContext(Dispatchers.Main) {
                     commitDictationText(requireNotNull(ime.currentInputConnection), transcript, false)
