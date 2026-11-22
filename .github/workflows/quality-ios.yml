@@ -155,6 +155,26 @@ jobs:
             -resultBundlePath "${RESULT_BUNDLE}" \
             test-without-building
 
+      - name: Transcribe a public English fixture in the iOS simulator using the pinned Fourier pack
+        working-directory: ios
+        env:
+          UDID: ${{ steps.simulator.outputs.udid }}
+          DERIVED_DATA: ${{ runner.temp }}/DerivedData
+        run: |
+          set -euo pipefail
+          dir="${PWD}/build/model-e2e"
+          python3 ../tools/model-e2e/fetch_sherpa.py oruk-fourier-2b "${dir}"
+          python3 ../tools/model-e2e/make_scenarios.py "${dir}/scenarios"
+          TEST_RUNNER_VOCA_MODEL_E2E_DIR="${dir}" TEST_RUNNER_VOCA_MODEL_E2E_SHERPA_MODEL=oruk-fourier-2b xcodebuild \
+            -project VocaPhone.xcodeproj -scheme VocaPhone -sdk iphonesimulator \
+            -destination "platform=iOS Simulator,id=${UDID}" -derivedDataPath "${DERIVED_DATA}" \
+            -resultBundlePath "${RUNNER_TEMP}/Fourier.xcresult" -disableAutomaticPackageResolution \
+            -only-testing:VocaPhoneTests/SherpaModelEndToEndTests/aStopTapDoesNotSilenceQuietSpeech \
+            CODE_SIGNING_ALLOWED=NO COMPILER_INDEX_STORE_ENABLE=NO test-without-building
+          summary=$(xcrun xcresulttool get test-results summary --path "${RUNNER_TEMP}/Fourier.xcresult" --compact)
+          echo "${summary}"
+          python3 -c 'import sys,json;s=json.loads(sys.argv[1]);assert s["passedTests"]>0 and s["failedTests"]==0 and s["skippedTests"]==0,s' "${summary}"
+
       # The unit tests above stub WhisperKit out, which is how an upgrade that
       # returned empty windows passed them. This decodes synthesized speech
       # with the real pinned model, so it runs when a pull request touches
