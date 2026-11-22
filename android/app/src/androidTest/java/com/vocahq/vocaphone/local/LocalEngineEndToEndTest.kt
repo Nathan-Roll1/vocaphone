@@ -1,6 +1,20 @@
 package com.vocahq.vocaphone.local
 
 import android.util.Log
+import android.app.UiAutomation
+import android.content.ComponentName
+import android.content.Intent
+import java.util.concurrent.atomic.AtomicLong
+import com.vocahq.vocaphone.VocaPhoneApplication
+import com.vocahq.vocaphone.ime.VocaPhoneInputMethodService
+import com.vocahq.vocaphone.ime.commitDictationText
+import com.vocahq.vocaphone.dictation.InsertionOutcome
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.delay
 import androidx.test.platform.app.InstrumentationRegistry
 import com.vocahq.vocaphone.audio.SpeechAudioConditioning
 import java.io.File
@@ -79,6 +93,112 @@ class LocalEngineEndToEndTest {
             Log.i("FourierPhysical", "pass=${index + 1} runtimeMs=${android.os.SystemClock.elapsedRealtime() - started} transcript=$text")
             assertTrue("unexpected Fourier result: $text", text.lowercase().contains("yellow lamps"))
         }
+    }
+
+    @Test
+    fun fourierRestartsDownloadAndInsertsInExternalEditor() = runBlocking {
+        val m = LocalModelManager(context)
+        val model = requireNotNull(LocalModelCatalog.find("oruk-fourier-2b"))
+        val initialFree = context.filesDir.usableSpace
+        val prefix = File(m.directoryFor(model).parentFile, ".${model.id}.staging")
+        val first = launch(Dispatchers.IO) {
+            m.download(model, cancelReason = { DownloadCancelReason.TIME_LIMIT })
+        }
+        withTimeout(240_000) {
+            while (m.state.value.downloadedBytes < 32_000_000) delay(250)
+        }
+        first.cancelAndJoin()
+        val retained = prefix.walkTopDown().filter { it.isFile }.sumOf { it.length() }
+        assertTrue("Interrupted transfer lost its partial data", retained >= 20_000_000)
+        val resumed = AtomicLong(0)
+        val monitor = launch(Dispatchers.Default) {
+            m.state.collect { state -> resumed.updateAndGet { maxOf(it, state.resumedBytes) } }
+        }
+        m.download(model)
+        monitor.cancelAndJoin()
+        assertTrue("The resumed request did not reuse a byte range", resumed.get() > 0)
+        LocalModelIntegrity.verifySizes(model, m.directoryFor(model))
+        val installed = m.directoryFor(model).walkTopDown().filter { it.isFile }.sumOf { it.length() }
+        Log.i("FourierPhysical", "resume retainedBytes=$retained resumedBytes=${resumed.get()} installedBytes=$installed freeBeforeBytes=$initialFree freeAfterBytes=${context.filesDir.usableSpace}")
+
+        val automation = InstrumentationRegistry.getInstrumentation()
+            .getUiAutomation(UiAutomation.FLAG_DONT_SUPPRESS_ACCESSIBILITY_SERVICES)
+        fun shell(cmd: String): String = automation.executeShellCommand(cmd).let { fd ->
+            android.os.ParcelFileDescriptor.AutoCloseInputStream(fd).bufferedReader().use { it.readText().trim() }
+        }
+        val oldIme = shell("settings get secure default_input_method")
+        val oldServices = shell("settings get secure enabled_accessibility_services")
+        val oldA11y = shell("settings get secure accessibility_enabled")
+        val pkg = context.packageName
+        val imeId = "$pkg/.ime.VocaPhoneInputMethodService"
+        val accessId = "$pkg/$pkg.accessibility.VocaPhoneAccessibilityService"
+        val container = VocaPhoneApplication.container(context)
+        val ext = testContext.packageName
+        val extComponent = ComponentName(ext, "com.vocahq.vocaphone.local.FourierPhysicalEditor")
+        fun openEditor() {
+            context.startActivity(Intent().setComponent(extComponent)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK))
+        }
+        suspend fun textInEditor(): String {
+            val root = automation.rootInActiveWindow ?: return ""
+            return root.findFocus(android.view.accessibility.AccessibilityNodeInfo.FOCUS_INPUT)?.text?.toString().orEmpty()
+        }
+        suspend fun awaitEditor(fragment: String) {
+            withTimeout(18_000) {
+                while (!textInEditor().contains(fragment, ignoreCase = true)) delay(200)
+            }
+        }
+        val problems = mutableListOf<String>()
+        try {
+            container.settings.setDisclosureAccepted(true)
+            shell("ime enable $imeId")
+            shell("ime set $imeId")
+            shell("settings put secure enabled_accessibility_services ${if (oldServices.isBlank() || oldServices == "null") accessId else "$oldServices:$accessId"}")
+            shell("settings put secure accessibility_enabled 1")
+            openEditor()
+            withTimeout(25_000) {
+                while (container.dictation.imeInserter?.currentTargetPackage() != ext) delay(250)
+            }
+            val transcript = m.transcribe(speech(), model.id, "en").text
+            assertTrue("Expected real Fourier fixture text", transcript.contains("yellow lamps", ignoreCase = true))
+            val memory = File("/proc/self/status").readLines().filter {
+                it.startsWith("VmHWM:") || it.startsWith("VmRSS:")
+            }.joinToString(" ")
+            Log.i("FourierPhysical", "post-decode process memory $memory")
+            runCatching {
+                val ime = container.dictation.imeInserter as VocaPhoneInputMethodService
+                val result = withContext(Dispatchers.Main) {
+                    commitDictationText(requireNotNull(ime.currentInputConnection), transcript, false)
+                }
+                require(result != null)
+                awaitEditor("yellow lamps")
+                Log.i("FourierPhysical", "keyboard externalField=PASS app=$ext text=${textInEditor()}")
+            }.onFailure { e ->
+                problems.add("keyboard: $e")
+                Log.e("FourierPhysical", "keyboard insertion failed: $e")
+            }
+            runCatching {
+                openEditor()
+                withTimeout(20_000) {
+                    while (container.dictation.floatingInserter?.currentTargetPackage() != ext || textInEditor().isNotEmpty()) delay(200)
+                }
+                val inserter = requireNotNull(container.dictation.floatingInserter)
+                val result = inserter.insert(transcript)
+                check(result.outcome == InsertionOutcome.INSERTED) { "overlay outcome ${result.outcome}" }
+                awaitEditor("yellow lamps")
+                Log.i("FourierPhysical", "overlay externalField=PASS app=$ext text=${textInEditor()}")
+            }.onFailure { e ->
+                problems.add("overlay: $e")
+                Log.e("FourierPhysical", "overlay insertion failed: $e")
+            }
+        } finally {
+            if (oldIme.isNotBlank() && oldIme != "null") shell("ime set $oldIme")
+            if (oldServices == "null" || oldServices.isBlank()) shell("settings delete secure enabled_accessibility_services")
+            else shell("settings put secure enabled_accessibility_services $oldServices")
+            if (oldA11y in listOf("0","1")) shell("settings put secure accessibility_enabled $oldA11y")
+            container.settings.setDisclosureAccepted(false)
+        }
+        assertTrue(problems.joinToString(), problems.isEmpty())
     }
 
     /**
