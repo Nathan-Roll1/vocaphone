@@ -14,7 +14,7 @@ jobs:
           submodules: recursive
       - uses: ./.github/actions/setup-android
       - working-directory: android
-        run: ./gradlew :app:assembleFullDebug :app:assembleFullDebugAndroidTest --no-daemon
+        run: ./gradlew :app:assembleXDebug :app:assembleXDebugAndroidTest --no-daemon
       - uses: actions/upload-artifact@v4
         with:
           name: physical-test-apks

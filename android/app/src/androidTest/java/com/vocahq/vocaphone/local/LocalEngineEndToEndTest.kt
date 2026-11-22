@@ -202,6 +202,57 @@ class LocalEngineEndToEndTest {
         assertTrue(problems.joinToString(), problems.isEmpty())
     }
 
+    @Test
+    fun xOverlayInsertsTheVerifiedFixtureInExternalEditor() = runBlocking {
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        val automation = instrumentation.getUiAutomation(UiAutomation.FLAG_DONT_SUPPRESS_ACCESSIBILITY_SERVICES)
+        fun shell(command: String): String = automation.executeShellCommand(command).let { fd ->
+            android.os.ParcelFileDescriptor.AutoCloseInputStream(fd).bufferedReader().use { it.readText().trim() }
+        }
+        val pkg = context.packageName
+        check(pkg.endsWith(".x")) { "The floating service ships only in the X variant: $pkg" }
+        val app = VocaPhoneApplication.container(context)
+        val ext = testContext.packageName
+        val oldServices = shell("settings get secure enabled_accessibility_services")
+        val oldFlag = shell("settings get secure accessibility_enabled")
+        val accessId = "$pkg/com.vocahq.vocaphone.accessibility.VocaPhoneAccessibilityService"
+        val given = "After early nightfall, the yellow lamps would light up here and there the squalid quarter of the brothels."
+        try {
+            app.settings.setDisclosureAccepted(true)
+            shell("appops set $pkg ACCESS_RESTRICTED_SETTINGS allow")
+            val services = if (oldServices.isBlank() || oldServices == "null") accessId else "$oldServices:$accessId"
+            shell("settings put secure enabled_accessibility_services $services")
+            shell("settings put secure accessibility_enabled 1")
+            context.startActivity(Intent().setComponent(ComponentName(ext, "com.vocahq.vocaphone.local.FourierPhysicalEditor"))
+                .putExtra("showKeyboard", false).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK))
+            var attempts = 0
+            withTimeout(35_000) {
+                while (app.dictation.floatingInserter?.currentTargetPackage() != ext) {
+                    if (attempts++ % 15 == 0) Log.i("FourierPhysical", "overlayReady=${app.dictation.floatingInserter != null} target=${app.dictation.floatingInserter?.currentTargetPackage()} root=${automation.rootInActiveWindow?.packageName} component=$accessId")
+                    delay(200)
+                }
+            }
+            val outcome = requireNotNull(app.dictation.floatingInserter).insert(given)
+            check(outcome.outcome == InsertionOutcome.INSERTED) { "overlay outcome ${outcome.outcome}" }
+            withTimeout(12_000) {
+                while (true) {
+                    val node = automation.rootInActiveWindow?.findFocus(android.view.accessibility.AccessibilityNodeInfo.FOCUS_INPUT)
+                    val actual = node?.text?.toString().orEmpty()
+                    if (actual.trim() == given) {
+                        Log.i("FourierPhysical", "X floating overlay externalField=PASS app=$ext text=$actual")
+                        break
+                    }
+                    delay(200)
+                }
+            }
+        } finally {
+            if (oldServices == "null" || oldServices.isBlank()) shell("settings delete secure enabled_accessibility_services")
+            else shell("settings put secure enabled_accessibility_services $oldServices")
+            if (oldFlag in listOf("0","1")) shell("settings put secure accessibility_enabled $oldFlag")
+            app.settings.setDisclosureAccepted(false)
+        }
+    }
+
     /**
      * Repeatable physical-device timing for a model that is already downloaded
      * in the app under test. This deliberately does not assert a duration: the

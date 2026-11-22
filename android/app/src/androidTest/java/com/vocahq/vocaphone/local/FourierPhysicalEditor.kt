@@ -14,6 +14,10 @@ class FourierPhysicalEditor : Activity() {
         editor.contentDescription = "Fourier external editable field"
         setContentView(editor)
         editor.requestFocus()
+        if (!intent.getBooleanExtra("showKeyboard", true)) {
+            window.setSoftInputMode(android.view.WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_HIDDEN)
+            return
+        }
         editor.postDelayed({
             getSystemService(InputMethodManager::class.java)
                 .showSoftInput(editor, InputMethodManager.SHOW_IMPLICIT)
