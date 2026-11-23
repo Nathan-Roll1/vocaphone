@@ -15,11 +15,11 @@ android {
     compileSdkMinor = 0
 
     defaultConfig {
-        applicationId = "com.vocahq.vocaphone"
+        applicationId = "ai.oruk.fourierpreview.keyboard"
         minSdk = 33
         targetSdk = 36
         versionCode = 35
-        versionName = "0.2.7"
+        versionName = "0.2.7-fourier-preview.20261122"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -76,7 +76,7 @@ android {
             dimension = "distribution"
             isDefault = true
             buildConfigField("boolean", "SHERPA_ONNX", "true")
-            buildConfigField("boolean", "TELEMETRY", "true")
+            buildConfigField("boolean", "TELEMETRY", "false")
             buildConfigField("boolean", "FLOATING_INPUT", "false")
             buildConfigField("String", "APTABASE_HOST", "\"$aptabaseHost\"")
             buildConfigField("String", "APTABASE_KEY", "\"$aptabaseKey\"")
@@ -95,7 +95,7 @@ android {
             // No versionNameSuffix: X ships on the same android/v* tag as the
             // keyboard APK, so its versionName is the tag like every flavor.
             buildConfigField("boolean", "SHERPA_ONNX", "true")
-            buildConfigField("boolean", "TELEMETRY", "true")
+            buildConfigField("boolean", "TELEMETRY", "false")
             buildConfigField("boolean", "FLOATING_INPUT", "true")
             buildConfigField("String", "APTABASE_HOST", "\"$aptabaseHost\"")
             buildConfigField("String", "APTABASE_KEY", "\"$aptabaseKey\"")

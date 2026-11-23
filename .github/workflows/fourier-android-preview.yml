@@ -1,0 +1,78 @@
+name: Build and inspect the independent Fourier keyboard preview
+on:
+  push:
+    branches: [qa/fourier-android-preview-build]
+permissions:
+  contents: read
+jobs:
+  package:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 42
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          persist-credentials: false
+      - uses: ./.github/actions/setup-android
+      - name: Assemble the full release with its own one-build contributor identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p distribution android/app/src/main/assets/preview-notices
+          cp .github/fourier-preview/{NOTICE.md,notices/*} android/app/src/main/assets/preview-notices/
+          export KEYSTORE_FILE="$RUNNER_TEMP/fourier-preview.p12" KEY_ALIAS="preview"
+          KEYSTORE_PASSWORD="$(openssl rand -hex 32)"
+          export KEYSTORE_PASSWORD KEY_PASSWORD="$KEYSTORE_PASSWORD"
+          trap 'rm -f "$KEYSTORE_FILE"' EXIT
+          keytool -genkeypair -keyalg RSA -keysize 3072 -validity 740 -keystore "$KEYSTORE_FILE" -storepass "$KEYSTORE_PASSWORD" -alias "$KEY_ALIAS" -dname 'CN=Oruk Independent Fourier Keyboard Contributor Preview'
+          (cd android && ./gradlew :app:assembleFullRelease :app:testFullDebugUnitTest --tests '*LocalModelIntegrityTest' -PaptabaseAppKey=)
+          cp android/app/build/outputs/apk/full/release/vocaphone-fullRelease.apk distribution/Fourier-Keyboard-Preview.apk
+          tools="$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -1)"
+          "$tools/apksigner" verify --verbose --print-certs distribution/Fourier-Keyboard-Preview.apk > distribution/SIGNER.txt
+          "$tools/aapt2" dump badging distribution/Fourier-Keyboard-Preview.apk > distribution/manifest.txt
+          grep -F "package: name='ai.oruk.fourierpreview.keyboard'" distribution/manifest.txt
+          grep -F 'Oruk Independent Fourier Keyboard Contributor Preview' distribution/SIGNER.txt
+          python3 .github/fourier-preview/check_apk.py distribution/Fourier-Keyboard-Preview.apk
+          (cd distribution && sha256sum Fourier-Keyboard-Preview.apk > SHA256SUMS.txt)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: preview-candidate
+          path: distribution/
+          retention-days: 4
+  picker:
+    needs: package
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: preview-candidate
+          path: distribution/
+      - name: Launch a fresh Google APIs emulator and inspect the installed picker
+        run: |
+          set -euo pipefail
+          export PATH="$ANDROID_HOME/emulator:$ANDROID_HOME/platform-tools:$ANDROID_HOME/cmdline-tools/latest/bin:$PATH"
+          sudo chmod 666 /dev/kvm
+          sdkmanager 'platform-tools' 'emulator' 'system-images;android-35;google_apis;x86_64' > /tmp/preview-sdk.log 2>&1
+          echo no | avdmanager create avd -f -n FourierPicker -k 'system-images;android-35;google_apis;x86_64' --device pixel_6
+          emulator @FourierPicker -no-window -no-snapshot -noaudio -no-boot-anim -memory 10000 -cores 2 -gpu swiftshader_indirect >/tmp/preview-avd.log 2>&1 &
+          echo $! > /tmp/preview-avd-pid
+          trap 'kill "$(cat /tmp/preview-avd-pid)" 2>/dev/null || true; tail -30 /tmp/preview-avd.log' EXIT
+          timeout 420 adb wait-for-device
+          timeout 420 sh -c 'until adb shell getprop sys.boot_completed | grep -q 1; do sleep 3; done'
+          adb shell input keyevent 82
+          adb shell wm size 820x1800
+          adb shell wm density 260
+          adb install distribution/Fourier-Keyboard-Preview.apk
+          python3 .github/fourier-preview/check_picker.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: picker-check
+          path: |
+            distribution/*.json
+            distribution/*.png
+          retention-days: 5
