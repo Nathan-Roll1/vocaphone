@@ -1,0 +1,73 @@
+name: Inspect the signed Android contributor preview
+on:
+  push:
+    branches: [qa/fourier-preview-picker-receipt]
+permissions:
+  contents: read
+  actions: read
+jobs:
+  picker:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: preview-candidate
+          run-id: 45086608848
+          github-token: ${{ github.token }}
+          path: distribution/
+      - name: Launch a fresh Google APIs emulator and inspect the installed picker
+        run: |
+          set -euo pipefail
+          export PATH="$ANDROID_HOME/emulator:$ANDROID_HOME/platform-tools:$ANDROID_HOME/cmdline-tools/latest/bin:$PATH"
+          export ANDROID_USER_HOME="$RUNNER_TEMP/android-prefs"
+          export ANDROID_EMULATOR_HOME="$ANDROID_USER_HOME"
+          export ANDROID_AVD_HOME="$ANDROID_USER_HOME/avd"
+          mkdir -p "$ANDROID_AVD_HOME"
+          sudo chmod 666 /dev/kvm
+          sdkmanager 'platform-tools' 'emulator' 'system-images;android-35;google_apis;x86_64' > /tmp/preview-sdk.log 2>&1
+          echo no | avdmanager create avd -f -n FourierPicker -k 'system-images;android-35;google_apis;x86_64' --device pixel_6
+          ini="$(find "$RUNNER_TEMP" "$HOME" -name FourierPicker.ini -print -quit 2>/dev/null || true)"
+          test -n "$ini"
+          export ANDROID_AVD_HOME="$(dirname "$ini")"
+          emulator -list-avds | grep -x FourierPicker
+          emulator @FourierPicker -no-window -no-snapshot -noaudio -no-boot-anim -memory 10000 -cores 2 -gpu swiftshader >/tmp/preview-avd.log 2>&1 &
+          echo $! > /tmp/preview-avd-pid
+          trap 'kill "$(cat /tmp/preview-avd-pid)" 2>/dev/null || true; tail -30 /tmp/preview-avd.log' EXIT
+          for _ in {1..60}; do
+            kill -0 "$(cat /tmp/preview-avd-pid)"
+            if adb devices | grep -q emulator; then break; fi
+            sleep 2
+          done
+          timeout 150 adb wait-for-device
+          timeout 420 sh -c 'until adb shell getprop sys.boot_completed | grep -q 1; do sleep 3; done'
+          adb shell input keyevent 82
+          adb shell wm size 820x1800
+          adb shell wm density 260
+          adb shell settings put global animator_duration_scale 0
+          adb shell settings put global window_animation_scale 0
+          adb shell settings put global transition_animation_scale 0
+          cd "$RUNNER_TEMP"
+          curl -fsSLo vocaphone.apk https://github.com/VocaHQ/vocaphone/releases/download/android/v0.2.7/vocaphone.apk
+          curl -fsSLo official-checksums https://github.com/VocaHQ/vocaphone/releases/download/android/v0.2.7/SHA256SUMS.txt
+          grep -E '[[:space:]]vocaphone.apk$' official-checksums | sha256sum -c -
+          adb install vocaphone.apk
+          cd "$GITHUB_WORKSPACE"
+          adb install distribution/Fourier-Keyboard-Preview.apk
+          adb shell pm path com.vocahq.vocaphone | tee distribution/official-install.txt
+          adb shell pm path ai.oruk.fourierpreview.keyboard | tee distribution/preview-install.txt
+          grep -F /base.apk distribution/official-install.txt
+          grep -F /base.apk distribution/preview-install.txt
+          python3 .github/fourier-preview/check_picker.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: picker-check
+          path: |
+            distribution/*.json
+            distribution/*.png
+            distribution/*-install.txt
+          retention-days: 5
